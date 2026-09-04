@@ -1,0 +1,6 @@
+{
+  "name": "Voluntariado Deportivo UMH",
+  "description": "Gestión de voluntarios para eventos deportivos en la UMH",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

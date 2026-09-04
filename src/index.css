@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  header, footer, aside, nav, button, .no-print {
+    display: none !important;
+  }
+  #certificate-print-area, #certificate-print-area * {
+    visibility: visible;
+  }
+  #certificate-print-area {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: none !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 2cm !important;
+    margin: 0 !important;
+    background: white !important;
+    z-index: 999999;
+  }
+  @page {
+    size: A4 portrait;
+    margin: 0;
+  }
+}
