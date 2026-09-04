@@ -1,0 +1,125 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function existing() { return resource.data; }
+    function incoming() { return request.resource.data; }
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'robertomontonmartinez@gmail.com'
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidAdmin(data) {
+      return data.keys().hasAll(['email', 'createdAt'])
+        && data.keys().size() == 2
+        && data.email is string && data.email.size() <= 100
+        && data.createdAt is string && data.createdAt.size() <= 50;
+    }
+
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && request.auth.uid == adminId;
+      allow read: if isAdmin();
+      allow create: if isAdmin() && isValidAdmin(incoming());
+      allow update: if isAdmin()
+                    && isValidAdmin(incoming())
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'createdAt']);
+      allow delete: if isAdmin();
+    }
+
+    function isValidEvent(data) {
+      return data.keys().hasAll(['name', 'date', 'location', 'status', 'shifts', 'academicYear'])
+        && data.name is string && data.name.size() <= 100
+        && data.date is string && data.date.size() <= 50
+        && data.location is string && data.location.size() <= 100
+        && data.status is string && (data.status == 'upcoming' || data.status == 'completed')
+        && data.shifts is list && data.shifts.size() <= 50
+        && (data.shifts.size() == 0 || (
+             data.shifts[0].keys().hasAll(['name', 'date', 'hours'])
+          ))
+        && data.academicYear is string && data.academicYear.size() <= 20
+        && (!('description' in data) || (data.description is string && data.description.size() <= 500));
+    }
+
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin() && isValidEvent(incoming());
+      allow update: if isAdmin()
+                    && isValidEvent(incoming())
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'date', 'location', 'status', 'shifts', 'description', 'academicYear']);
+      allow delete: if isAdmin();
+    }
+
+    function isValidSubmission(data) {
+      return data.keys().hasAll(['name', 'nif', 'colectivo', 'email', 'phone', 'departmentOrDegree', 'eventsDeclared', 'userId', 'submissionDate', 'academicYear', 'status', 'hoursApproved', 'ectsCredits', 'activitiesCount'])
+        && data.name is string && data.name.size() <= 100
+        && data.nif is string && data.nif.size() <= 20
+        && data.colectivo is string && (data.colectivo == 'estudiante' || data.colectivo == 'ptgas' || data.colectivo == 'pdi')
+        && data.email is string && data.email.size() <= 100
+        && data.phone is string && data.phone.size() <= 20
+        && data.departmentOrDegree is string && data.departmentOrDegree.size() <= 100
+        && data.eventsDeclared is list && data.eventsDeclared.size() <= 50
+        && (data.eventsDeclared.size() == 0 || (
+             data.eventsDeclared[0].keys().hasAll(['eventId', 'eventName', 'shiftName', 'hoursDeclared', 'attended', 'validatedForCertificate', 'hoursApproved'])
+          ))
+        && data.userId is string && data.userId.size() <= 128
+        && data.submissionDate is string && data.submissionDate.size() <= 50
+        && data.academicYear is string && data.academicYear.size() <= 20
+        && data.status is string && (data.status == 'pendiente' || data.status == 'cotejado' || data.status == 'validado' || data.status == 'emitido')
+        && data.hoursApproved is number
+        && data.ectsCredits is number
+        && data.activitiesCount is number
+        && (!('certificate' in data) || (
+             data.certificate.keys().hasAll(['issueDate', 'csvCode', 'signedBy', 'rectoralResolution', 'sentByEmail', 'emailSentDate'])
+          ));
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isAdmin() || (isSignedIn() && existing().userId == request.auth.uid);
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      
+      allow create: if isValidSubmission(incoming());
+                    
+      allow update: if isAdmin()
+                    && isValidSubmission(incoming())
+                    && incoming().diff(existing()).affectedKeys().hasOnly([
+                         'name', 'nif', 'colectivo', 'email', 'phone', 'departmentOrDegree', 
+                         'eventsDeclared', 'userId', 'submissionDate', 'academicYear', 
+                         'status', 'hoursApproved', 'ectsCredits', 'activitiesCount', 'certificate'
+                       ]);
+                       
+      allow delete: if isAdmin();
+    }
+
+    function isValidConfig(data) {
+      return data.keys().hasAll(['academicYear', 'availableYears', 'hoursPerEcts', 'signerName', 'signerRole', 'signerResolution'])
+        && data.academicYear is string && data.academicYear.size() <= 20
+        && data.availableYears is list && data.availableYears.size() <= 50
+        && data.hoursPerEcts is number
+        && data.signerName is string && data.signerName.size() <= 100
+        && data.signerRole is string && data.signerRole.size() <= 100
+        && data.signerResolution is string && data.signerResolution.size() <= 100;
+    }
+
+    match /config/{configId} {
+      allow read: if isSignedIn();
+      allow create, delete: if false; // Only one config doc, typically seeded
+      allow update: if isAdmin()
+                    && isValidConfig(incoming())
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['academicYear', 'availableYears', 'hoursPerEcts', 'signerName', 'signerRole', 'signerResolution']);
+    }
+  }
+}

@@ -1,0 +1,116 @@
+{
+  "entities": {
+    "Admin": {
+      "title": "Admin",
+      "description": "Admin users (Gestores)",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "createdAt": { "type": "string" }
+      }
+    },
+    "EventItem": {
+      "title": "EventItem",
+      "description": "Sporting events",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "date": { "type": "string", "maxLength": 50 },
+        "location": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["upcoming", "completed"] },
+        "shifts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "maxLength": 50 },
+              "date": { "type": "string", "maxLength": 50 },
+              "hours": { "type": "number" }
+            }
+          }
+        },
+        "description": { "type": "string", "maxLength": 500 },
+        "academicYear": { "type": "string", "maxLength": 20 }
+      },
+      "required": ["name", "date", "location", "status", "shifts", "academicYear"]
+    },
+    "VolunteerSubmission": {
+      "title": "VolunteerSubmission",
+      "description": "Form submission from a student/worker",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "nif": { "type": "string", "maxLength": 20 },
+        "colectivo": { "type": "string", "enum": ["estudiante", "ptgas", "pdi"] },
+        "email": { "type": "string", "maxLength": 100 },
+        "phone": { "type": "string", "maxLength": 20 },
+        "departmentOrDegree": { "type": "string", "maxLength": 100 },
+        "eventsDeclared": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "eventId": { "type": "string", "maxLength": 50 },
+              "eventName": { "type": "string", "maxLength": 100 },
+              "shiftName": { "type": "string", "maxLength": 50 },
+              "hoursDeclared": { "type": "number" },
+              "attended": { "type": "boolean" },
+              "validatedForCertificate": { "type": "boolean" },
+              "hoursApproved": { "type": "number" }
+            }
+          }
+        },
+        "userId": { "type": "string", "maxLength": 128 },
+        "submissionDate": { "type": "string", "maxLength": 50 },
+        "academicYear": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["pendiente", "cotejado", "validado", "emitido"] },
+        "hoursApproved": { "type": "number" },
+        "ectsCredits": { "type": "number" },
+        "activitiesCount": { "type": "number" },
+        "certificate": {
+          "type": "object",
+          "properties": {
+            "issueDate": { "type": "string", "maxLength": 50 },
+            "csvCode": { "type": "string", "maxLength": 50 },
+            "signedBy": { "type": "string", "maxLength": 100 },
+            "rectoralResolution": { "type": "string", "maxLength": 100 },
+            "sentByEmail": { "type": "boolean" },
+            "emailSentDate": { "type": "string", "maxLength": 50 }
+          }
+        }
+      },
+      "required": ["name", "nif", "colectivo", "email", "phone", "departmentOrDegree", "eventsDeclared", "userId", "submissionDate", "academicYear", "status", "hoursApproved", "ectsCredits", "activitiesCount"]
+    },
+    "SystemConfig": {
+      "title": "SystemConfig",
+      "description": "Global settings",
+      "type": "object",
+      "properties": {
+        "academicYear": { "type": "string", "maxLength": 20 },
+        "availableYears": { "type": "array", "items": { "type": "string" } },
+        "hoursPerEcts": { "type": "number" },
+        "signerName": { "type": "string", "maxLength": 100 },
+        "signerRole": { "type": "string", "maxLength": 100 },
+        "signerResolution": { "type": "string", "maxLength": 100 }
+      }
+    }
+  },
+  "firestore": {
+    "admins/{adminId}": {
+      "schema": "Admin",
+      "description": "List of gestores"
+    },
+    "events/{eventId}": {
+      "schema": "EventItem",
+      "description": "Sporting events"
+    },
+    "submissions/{submissionId}": {
+      "schema": "VolunteerSubmission",
+      "description": "Form submissions"
+    },
+    "config/{configId}": {
+      "schema": "SystemConfig",
+      "description": "System configuration, typically id='main'"
+    }
+  }
+}

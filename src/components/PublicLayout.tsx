@@ -1,34 +1,52 @@
 import { Outlet } from 'react-router-dom';
 import { useVolunteer } from '../context/VolunteerContext';
+import { useAuth } from '../context/AuthContext';
 import { UMH_ASSETS } from '../data';
-import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Info, X, LogOut } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export function PublicLayout() {
   const { toasts, dismissToast } = useVolunteer();
+  const { signOut } = useAuth();
 
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 text-slate-900 font-sans antialiased">
       <header className="bg-white border-b border-gray-200 sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-18 flex items-center justify-between">
-          <div className="flex items-center gap-3 sm:gap-5">
-            <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 sm:gap-6 shrink-0">
+            <div className="flex items-center gap-4">
               <img 
                 src={UMH_ASSETS.logoDeportes} 
                 alt="Deportes UMH" 
-                className="h-8 sm:h-9 w-auto object-contain"
+                className="h-8 sm:h-10 w-auto object-contain"
               />
-              <div className="h-6 w-px bg-gray-200 hidden sm:block"></div>
+              <div className="h-8 w-px bg-gray-200 hidden sm:block"></div>
               <img 
-                src={UMH_ASSETS.logoVoluntariado} 
-                alt="Voluntariado Deportivo UMH" 
-                className="h-7 sm:h-8 w-auto object-contain"
+                src={UMH_ASSETS.logoSaludable} 
+                alt="UMH Saludable" 
+                className="h-7 sm:h-9 w-auto object-contain hidden sm:block"
               />
             </div>
           </div>
-          <div className="flex items-center gap-2 text-xs font-semibold text-gray-500">
-            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <span>Solicitud Oficial</span>
+          <div className="flex items-center gap-4 text-xs font-semibold text-gray-500">
+            <img 
+              src={UMH_ASSETS.logoVoluntariado} 
+              alt="Voluntariado Deportivo UMH" 
+              className="h-6 sm:h-8 w-auto object-contain hidden md:block mr-2"
+            />
+            
+            <div className="hidden sm:flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span>Solicitud Oficial</span>
+            </div>
+            
+            <button 
+              onClick={signOut}
+              className="flex items-center gap-2 p-1.5 text-sm font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+              title="Cerrar sesión"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </header>

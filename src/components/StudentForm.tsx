@@ -73,9 +73,29 @@ export function StudentForm() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-
+    
+    // Strict Input Validation (Prevent XSS / Injection)
+    const nameRegex = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s\-\.,']+$/;
+    const nifRegex = /^[a-zA-Z0-9\-\.]+$/;
+    const phoneRegex = /^[0-9\+\-\s]+$/;
+    
     if (!nombre.trim() || !nif.trim() || !email.trim()) {
       alert('Por favor, completa tus datos personales obligatorios (Nombre, NIF y Email).');
+      return;
+    }
+    
+    if (!nameRegex.test(nombre)) {
+      alert('El nombre contiene caracteres no permitidos.');
+      return;
+    }
+    
+    if (!nifRegex.test(nif)) {
+      alert('El NIF contiene caracteres no permitidos.');
+      return;
+    }
+    
+    if (telefono.trim() && !phoneRegex.test(telefono)) {
+      alert('El teléfono contiene caracteres no permitidos.');
       return;
     }
 
@@ -105,25 +125,31 @@ export function StudentForm() {
       validatedForCertificate: true
     }));
 
-    const newId = addSubmission({
-      name: nombre.trim(),
-      nif: nif.trim().toUpperCase(),
-      phone: telefono.trim(),
-      email: email.trim().toLowerCase(),
-      colectivo,
-      departmentOrDegree: departmentOrDegree.trim() || (colectivo === 'estudiante' ? 'Grado UMH' : 'Personal UMH'),
-      hoursRequested: totalHours,
-      eventsDeclared,
-      observations: 'Solicitud realizada mediante formulario web'
-    });
+    const executeSubmit = async () => {
+      const newId = await addSubmission({
+        name: nombre.trim(),
+        nif: nif.trim().toUpperCase(),
+        phone: telefono.trim(),
+        email: email.trim().toLowerCase(),
+        colectivo,
+        departmentOrDegree: departmentOrDegree.trim() || (colectivo === 'estudiante' ? 'Grado UMH' : 'Personal UMH'),
+        hoursRequested: totalHours,
+        eventsDeclared,
+        observations: 'Solicitud realizada mediante formulario web'
+      });
 
-    if (config.notificationEmail) {
-      setTimeout(() => {
-        showToast(`Notificación enviada a ${config.notificationEmail}`, 'info');
-      }, 500);
-    }
+      if (config.notificationEmail) {
+        setTimeout(() => {
+          showToast(`Notificación enviada a ${config.notificationEmail}`, 'info');
+        }, 500);
+      }
 
-    setSubmittedId(newId);
+      if (newId) {
+        setSubmittedId(newId);
+      }
+    };
+    
+    executeSubmit();
   };
 
   // If submitted, show friendly confirmation screen
@@ -200,24 +226,39 @@ export function StudentForm() {
       
       {/* Institutional Header Banner */}
       <div className="bg-white rounded-3xl border border-gray-200 p-6 sm:p-8 shadow-xs space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <img 
-              src={UMH_ASSETS.escudoOficial} 
-              alt="Escudo UMH" 
-              className="h-12 w-12 object-contain"
-            />
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-[#8b1820]">
-                  Curso Académico {selectedYear}
-                </span>
-                <span className="text-xs text-gray-500">• Oficina de Deportes UMH</span>
-              </div>
-              <h1 className="text-xl sm:text-2xl font-bold text-gray-900 mt-1">
-                Solicitud de Certificado de Voluntariado Deportivo
-              </h1>
+        <div className="flex flex-col gap-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
+            <div className="flex items-center gap-4 sm:gap-6">
+              <img 
+                src={UMH_ASSETS.logoDeportes} 
+                alt="Deportes UMH" 
+                className="h-10 sm:h-12 w-auto object-contain"
+              />
+              <div className="h-10 w-px bg-gray-200 hidden sm:block"></div>
+              <img 
+                src={UMH_ASSETS.logoSaludable} 
+                alt="UMH Saludable" 
+                className="h-8 sm:h-10 w-auto object-contain hidden sm:block"
+              />
             </div>
+            
+            <img 
+              src={UMH_ASSETS.logoVoluntariado} 
+              alt="Voluntariado Deportivo UMH" 
+              className="h-8 sm:h-10 w-auto object-contain"
+            />
+          </div>
+          
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-[#8b1820]">
+                Curso Académico {selectedYear}
+              </span>
+              <span className="text-xs text-gray-500">• Oficina de Deportes UMH</span>
+            </div>
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-900 mt-1">
+              Solicitud de Certificado de Voluntariado Deportivo
+            </h1>
           </div>
         </div>
 

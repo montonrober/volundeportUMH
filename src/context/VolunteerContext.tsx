@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { VolunteerSubmission, EventItem, SystemConfig, ColectivoType } from '../types';
-import { initialSubmissions, availableEvents, initialConfig } from '../data';
 import confetti from 'canvas-confetti';
+import { db, auth, handleFirestoreError, OperationType } from '../firebase';
+import { collection, doc, onSnapshot, setDoc, updateDoc, writeBatch, getDoc, query, where, deleteDoc } from 'firebase/firestore';
+import { useAuth } from './AuthContext';
 
 interface ToastMessage {
   id: string;
@@ -21,35 +23,26 @@ interface VolunteerContextType {
   setSelectedSubmissionId: (id: string) => void;
   activeSubmission: VolunteerSubmission | undefined;
   
-  // Student Form
-  addSubmission: (newSub: Omit<VolunteerSubmission, 'id' | 'submissionDate' | 'status' | 'hoursApproved' | 'ectsCredits' | 'activitiesCount' | 'academicYear'>) => string;
+  addSubmission: (newSub: Omit<VolunteerSubmission, 'id' | 'submissionDate' | 'status' | 'hoursApproved' | 'ectsCredits' | 'activitiesCount' | 'academicYear'>) => Promise<string>;
+  toggleAttendance: (submissionId: string, eventIdx: number) => Promise<void>;
+  markAllAttendedForEvent: (eventId: string) => Promise<void>;
+  acceptAndGenerateReportForEvent: (eventId: string) => Promise<void>;
+  issueCertificate: (submissionId: string) => Promise<void>;
+  issueAllPendingCertificates: () => Promise<void>;
+  markCertificateAsSent: (submissionId: string) => Promise<void>;
   
-  // Fast Attendance Check & 1-Click Cert Generation
-  toggleAttendance: (submissionId: string, eventIdx: number) => void;
-  markAllAttendedForEvent: (eventId: string) => void;
-  acceptAndGenerateReportForEvent: (eventId: string) => void;
-  
-  // Direct Certificate actions
-  issueCertificate: (submissionId: string) => void;
-  issueAllPendingCertificates: () => void;
-  markCertificateAsSent: (submissionId: string) => void;
-  
-  // Google Forms Import & Export
-  importGoogleFormsCsv: (csvText: string) => number;
+  importGoogleFormsCsv: (csvText: string) => Promise<number>;
   exportDataToCsv: (type: 'asistencia' | 'certificados') => void;
   
-  // Config
-  updateConfig: (newCfg: Partial<SystemConfig>) => void;
-  addEvent: (newEvent: Omit<EventItem, 'id' | 'academicYear'>) => void;
-  updateEvent: (eventId: string, updatedEvent: Partial<EventItem>) => void;
-  deleteEvent: (eventId: string) => void;
+  updateConfig: (newCfg: Partial<SystemConfig>) => Promise<void>;
+  addEvent: (newEvent: Omit<EventItem, 'id' | 'academicYear'>) => Promise<void>;
+  updateEvent: (eventId: string, updatedEvent: Partial<EventItem>) => Promise<void>;
+  deleteEvent: (eventId: string) => Promise<void>;
   
-  // Toasts
   toasts: ToastMessage[];
   showToast: (text: string, type?: 'success' | 'info' | 'warning') => void;
   dismissToast: (id: string) => void;
 
-  // Real-time filtered lists & stats for current selectedYear
   yearSubmissions: VolunteerSubmission[];
   yearEvents: EventItem[];
   stats: {
@@ -65,71 +58,106 @@ interface VolunteerContextType {
 
 const VolunteerContext = createContext<VolunteerContextType | undefined>(undefined);
 
+const initialConfig: SystemConfig = {
+  academicYear: '2025-2026',
+  availableYears: ['2025-2026', '2024-2025'],
+  hoursPerEcts: 25,
+  signerName: 'Fdo: Fulanito de Tal',
+  signerRole: 'Vicerrector de Inclusión',
+  signerResolution: 'Resolución Rectoral UMH 1/2026'
+};
+
 export function VolunteerProvider({ children }: { children: React.ReactNode }) {
-  const [config, setConfig] = useState<SystemConfig>(() => {
-    const saved = localStorage.getItem('umh_config_v2');
-    return saved ? JSON.parse(saved) : initialConfig;
-  });
-
-  const [selectedYear, setSelectedYear] = useState<string>(() => {
-    return config.academicYear || '2025-2026';
-  });
-
-  const [submissions, setSubmissions] = useState<VolunteerSubmission[]>(() => {
-    const saved = localStorage.getItem('umh_submissions_v2');
-    return saved ? JSON.parse(saved) : initialSubmissions;
-  });
-
-  const [events, setEvents] = useState<EventItem[]>(() => {
-    const saved = localStorage.getItem('umh_events_v2');
-    return saved ? JSON.parse(saved) : availableEvents;
-  });
-
-  const [selectedSubmissionId, setSelectedSubmissionId] = useState<string>(() => {
-    return initialSubmissions[0]?.id || '';
-  });
-
+  const { user, isAdmin } = useAuth();
+  
+  const [config, setConfig] = useState<SystemConfig>(initialConfig);
+  const [selectedYear, setSelectedYear] = useState<string>('2025-2026');
+  const [submissions, setSubmissions] = useState<VolunteerSubmission[]>([]);
+  const [events, setEvents] = useState<EventItem[]>([]);
+  const [selectedSubmissionId, setSelectedSubmissionId] = useState<string>('');
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
+  // Load Config
   useEffect(() => {
-    localStorage.setItem('umh_config_v2', JSON.stringify(config));
-  }, [config]);
+    if (!user) return;
+    const unsubscribe = onSnapshot(doc(db, 'config', 'main'), (docSnap) => {
+      if (docSnap.exists()) {
+        const c = docSnap.data() as SystemConfig;
+        setConfig(c);
+        if (!selectedYear || !c.availableYears.includes(selectedYear)) {
+          setSelectedYear(c.academicYear);
+        }
+      }
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'config/main'));
+    return () => unsubscribe();
+  }, [user]);
 
+  // Load Events
   useEffect(() => {
-    localStorage.setItem('umh_submissions_v2', JSON.stringify(submissions));
-  }, [submissions]);
+    if (!user) return;
+    const unsubscribe = onSnapshot(collection(db, 'events'), (snapshot) => {
+      const evs: EventItem[] = [];
+      snapshot.forEach(doc => evs.push({ id: doc.id, ...doc.data() } as EventItem));
+      setEvents(evs);
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'events'));
+    return () => unsubscribe();
+  }, [user]);
 
+  // Load Submissions
   useEffect(() => {
-    localStorage.setItem('umh_events_v2', JSON.stringify(events));
-  }, [events]);
+    if (!user) return;
+    const q = isAdmin 
+      ? collection(db, 'submissions')
+      : query(collection(db, 'submissions'), where('userId', '==', user.uid));
+      
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const subs: VolunteerSubmission[] = [];
+      snapshot.forEach(doc => subs.push({ id: doc.id, ...doc.data() } as VolunteerSubmission));
+      
+      subs.sort((a, b) => {
+        return (b.submissionDate > a.submissionDate) ? 1 : -1;
+      });
+      
+      setSubmissions(subs);
+      if (subs.length > 0 && !selectedSubmissionId) {
+        setSelectedSubmissionId(subs[0].id);
+      }
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'submissions'));
+    return () => unsubscribe();
+  }, [user, isAdmin]);
 
   const showToast = (text: string, type: 'success' | 'info' | 'warning' = 'success') => {
     const id = Date.now().toString() + Math.random().toString(36).substring(2, 6);
     setToasts(prev => [...prev, { id, text, type }]);
-    setTimeout(() => {
-      dismissToast(id);
-    }, 4000);
+    setTimeout(() => dismissToast(id), 4000);
   };
 
   const dismissToast = (id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
-  const addAcademicYear = (newYear: string) => {
+  const addAcademicYear = async (newYear: string) => {
     const trimmed = newYear.trim();
     if (!trimmed) return;
     if (!config.availableYears.includes(trimmed)) {
       const updatedYears = [trimmed, ...config.availableYears];
-      setConfig(prev => ({ ...prev, availableYears: updatedYears, academicYear: trimmed }));
-      setSelectedYear(trimmed);
-      showToast(`Nuevo curso ${trimmed} añadido al histórico.`, 'success');
+      try {
+        await updateDoc(doc(db, 'config', 'main'), { 
+          availableYears: updatedYears,
+          academicYear: trimmed 
+        });
+        setSelectedYear(trimmed);
+        showToast(`Nuevo curso ${trimmed} añadido al histórico.`, 'success');
+      } catch (e) {
+        handleFirestoreError(e, OperationType.UPDATE, 'config/main');
+      }
     } else {
       setSelectedYear(trimmed);
     }
   };
 
-  const addSubmission = (newSub: Omit<VolunteerSubmission, 'id' | 'submissionDate' | 'status' | 'hoursApproved' | 'ectsCredits' | 'activitiesCount' | 'academicYear'>): string => {
-    const id = 'sub-' + Date.now().toString();
+  const addSubmission = async (newSub: Omit<VolunteerSubmission, 'id' | 'submissionDate' | 'status' | 'hoursApproved' | 'ectsCredits' | 'activitiesCount' | 'academicYear'>) => {
+    const id = 'sub-' + Date.now().toString() + '-' + Math.random().toString(36).substring(2,6);
     const now = new Date();
     const submissionDate = now.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) + ', ' + now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
 
@@ -137,9 +165,9 @@ export function VolunteerProvider({ children }: { children: React.ReactNode }) {
     const ects = newSub.colectivo === 'estudiante' ? Number((totalApproved / config.hoursPerEcts).toFixed(2)) : 0;
     const activitiesCount = newSub.eventsDeclared.filter(e => e.validatedForCertificate).length;
 
-    const fullSubmission: VolunteerSubmission = {
+    const fullSubmission = {
       ...newSub,
-      id,
+      userId: user?.uid || 'public-user',
       academicYear: selectedYear,
       submissionDate,
       hoursApproved: totalApproved,
@@ -148,50 +176,58 @@ export function VolunteerProvider({ children }: { children: React.ReactNode }) {
       status: 'pendiente'
     };
 
-    setSubmissions(prev => [fullSubmission, ...prev]);
-    setSelectedSubmissionId(id);
-    showToast(`Solicitud guardada para ${newSub.name} en el curso ${selectedYear}.`, 'success');
-    return id;
+    try {
+      await setDoc(doc(db, 'submissions', id), fullSubmission);
+      setSelectedSubmissionId(id);
+      showToast(`Solicitud guardada para ${newSub.name}.`, 'success');
+      return id;
+    } catch (e) {
+      handleFirestoreError(e, OperationType.CREATE, 'submissions');
+      return '';
+    }
   };
 
-  // Toggle single attendance item
-  const toggleAttendance = (submissionId: string, eventIdx: number) => {
-    setSubmissions(prev => prev.map(sub => {
-      if (sub.id !== submissionId) return sub;
-      const updatedEvents = sub.eventsDeclared.map((ev, idx) => {
-        if (idx !== eventIdx) return ev;
-        const newAttended = !ev.attended;
-        return {
-          ...ev,
-          attended: newAttended,
-          validatedForCertificate: newAttended,
-          hoursApproved: newAttended ? ev.hoursDeclared : 0
-        };
-      });
-
-      const totalApproved = updatedEvents.reduce((acc, e) => acc + (e.attended ? e.hoursApproved : 0), 0);
-      const validActivities = updatedEvents.filter(e => e.attended).length;
-      const ects = sub.colectivo === 'estudiante' ? Number((totalApproved / config.hoursPerEcts).toFixed(2)) : 0;
-
+  const toggleAttendance = async (submissionId: string, eventIdx: number) => {
+    const sub = submissions.find(s => s.id === submissionId);
+    if (!sub) return;
+    
+    const updatedEvents = sub.eventsDeclared.map((ev, idx) => {
+      if (idx !== eventIdx) return ev;
+      const newAttended = !ev.attended;
       return {
-        ...sub,
+        ...ev,
+        attended: newAttended,
+        validatedForCertificate: newAttended,
+        hoursApproved: newAttended ? ev.hoursDeclared : 0
+      };
+    });
+
+    const totalApproved = updatedEvents.reduce((acc, e) => acc + (e.attended ? e.hoursApproved : 0), 0);
+    const validActivities = updatedEvents.filter(e => e.attended).length;
+    const ects = sub.colectivo === 'estudiante' ? Number((totalApproved / config.hoursPerEcts).toFixed(2)) : 0;
+
+    try {
+      await updateDoc(doc(db, 'submissions', submissionId), {
         eventsDeclared: updatedEvents,
         hoursApproved: totalApproved,
         ectsCredits: ects,
-        activitiesCount: validActivities
-      };
-    }));
+        activitiesCount: validActivities,
+        status: 'cotejado'
+      });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `submissions/${submissionId}`);
+    }
   };
 
-  // Mark all volunteers for an event as attended
-  const markAllAttendedForEvent = (eventId: string) => {
+  const markAllAttendedForEvent = async (eventId: string) => {
+    const batch = writeBatch(db);
     let count = 0;
-    setSubmissions(prev => prev.map(sub => {
+    
+    submissions.forEach(sub => {
       let changed = false;
       const updatedEvents = sub.eventsDeclared.map(ev => {
         if (ev.eventId === eventId) {
           changed = true;
-          count++;
           return {
             ...ev,
             attended: true,
@@ -202,67 +238,77 @@ export function VolunteerProvider({ children }: { children: React.ReactNode }) {
         return ev;
       });
 
-      if (!changed) return sub;
+      if (changed) {
+        const totalApproved = updatedEvents.reduce((acc, e) => acc + (e.attended ? e.hoursApproved : 0), 0);
+        const validActivities = updatedEvents.filter(e => e.attended).length;
+        const ects = sub.colectivo === 'estudiante' ? Number((totalApproved / config.hoursPerEcts).toFixed(2)) : 0;
+        
+        batch.update(doc(db, 'submissions', sub.id), {
+          eventsDeclared: updatedEvents,
+          hoursApproved: totalApproved,
+          ectsCredits: ects,
+          activitiesCount: validActivities,
+          status: 'cotejado'
+        });
+        count++;
+      }
+    });
 
-      const totalApproved = updatedEvents.reduce((acc, e) => acc + (e.attended ? e.hoursApproved : 0), 0);
-      const validActivities = updatedEvents.filter(e => e.attended).length;
-      const ects = sub.colectivo === 'estudiante' ? Number((totalApproved / config.hoursPerEcts).toFixed(2)) : 0;
-
-      return {
-        ...sub,
-        eventsDeclared: updatedEvents,
-        hoursApproved: totalApproved,
-        ectsCredits: ects,
-        activitiesCount: validActivities
-      };
-    }));
-
-    showToast(`Asistencia confirmada para todos los participantes del evento.`, 'success');
+    if (count > 0) {
+      try {
+        await batch.commit();
+        showToast(`Asistencia confirmada para ${count} participantes.`, 'success');
+      } catch (e) {
+        handleFirestoreError(e, OperationType.UPDATE, 'submissions');
+      }
+    }
   };
 
-  // 1-Click Accept attendance and generate certificates/report for an entire event
-  const acceptAndGenerateReportForEvent = (eventId: string) => {
+  const acceptAndGenerateReportForEvent = async (eventId: string) => {
     const now = new Date();
-    let updatedCount = 0;
+    const batch = writeBatch(db);
+    let count = 0;
 
-    setSubmissions(prev => prev.map(sub => {
+    submissions.forEach(sub => {
       const hasEvent = sub.eventsDeclared.some(e => e.eventId === eventId && e.attended);
-      if (!hasEvent) return sub;
+      if (hasEvent) {
+        const csvCode = sub.certificate?.csvCode || `CSV-UMH-${selectedYear.slice(0, 4)}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+        
+        batch.update(doc(db, 'submissions', sub.id), {
+          status: 'emitido',
+          certificate: {
+            csvCode,
+            issueDate: now.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+            signedBy: config.signerName,
+            rectoralResolution: config.signerResolution,
+            sentByEmail: sub.certificate?.sentByEmail || false,
+            emailSentDate: sub.certificate?.emailSentDate || ''
+          }
+        });
+        count++;
+      }
+    });
 
-      updatedCount++;
-      const csvCode = sub.certificate?.csvCode || `CSV-UMH-${selectedYear.slice(0, 4)}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-
-      return {
-        ...sub,
-        status: 'emitido',
-        certificate: {
-          csvCode,
-          issueDate: now.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-          signedBy: config.signerName,
-          rectoralResolution: config.signerResolution,
-          sentByEmail: sub.certificate?.sentByEmail || false,
-          emailSentDate: sub.certificate?.emailSentDate
-        }
-      };
-    }));
-
-    try {
-      confetti({ particleCount: 100, spread: 80, origin: { y: 0.6 } });
-    } catch {
-      // safe fallback
+    if (count > 0) {
+      try {
+        await batch.commit();
+        confetti({ particleCount: 100, spread: 80, origin: { y: 0.6 } });
+        showToast(`¡Aceptado con éxito! Se han generado los certificados para ${count} participantes.`, 'success');
+      } catch (e) {
+        handleFirestoreError(e, OperationType.UPDATE, 'submissions');
+      }
     }
-
-    showToast(`¡Aceptado con éxito! Se han generado los certificados para ${updatedCount} participantes.`, 'success');
   };
 
-  // Issue single certificate
-  const issueCertificate = (submissionId: string) => {
+  const issueCertificate = async (submissionId: string) => {
+    const sub = submissions.find(s => s.id === submissionId);
+    if (!sub) return;
+    
     const now = new Date();
-    setSubmissions(prev => prev.map(sub => {
-      if (sub.id !== submissionId) return sub;
-      const csvCode = sub.certificate?.csvCode || `CSV-UMH-${selectedYear.slice(0, 4)}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-      return {
-        ...sub,
+    const csvCode = sub.certificate?.csvCode || `CSV-UMH-${selectedYear.slice(0, 4)}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    
+    try {
+      await updateDoc(doc(db, 'submissions', submissionId), {
         status: 'emitido',
         certificate: {
           csvCode,
@@ -270,46 +316,44 @@ export function VolunteerProvider({ children }: { children: React.ReactNode }) {
           signedBy: config.signerName,
           rectoralResolution: config.signerResolution,
           sentByEmail: sub.certificate?.sentByEmail || false,
-          emailSentDate: sub.certificate?.emailSentDate
+          emailSentDate: sub.certificate?.emailSentDate || ''
         }
-      };
-    }));
-
-    try {
+      });
       confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 } });
-    } catch {
-      // safe fallback
+      showToast('Certificado oficial generado.', 'success');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `submissions/${submissionId}`);
     }
-
-    showToast('Certificado oficial generado.', 'success');
   };
 
-  const markCertificateAsSent = (submissionId: string) => {
+  const markCertificateAsSent = async (submissionId: string) => {
+    const sub = submissions.find(s => s.id === submissionId);
+    if (!sub || !sub.certificate) return;
+    
     const now = new Date();
-    setSubmissions(prev => prev.map(sub => {
-      if (sub.id !== submissionId || !sub.certificate) return sub;
-      return {
-        ...sub,
+    try {
+      await updateDoc(doc(db, 'submissions', submissionId), {
         certificate: {
           ...sub.certificate,
           sentByEmail: true,
           emailSentDate: now.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) + ', ' + now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
         }
-      };
-    }));
-    showToast('Marcado como enviado por correo.', 'success');
+      });
+      showToast('Marcado como enviado por correo.', 'success');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `submissions/${submissionId}`);
+    }
   };
 
-  // Issue all pending certificates in bulk
-  const issueAllPendingCertificates = () => {
+  const issueAllPendingCertificates = async () => {
     const now = new Date();
+    const batch = writeBatch(db);
     let count = 0;
-    setSubmissions(prev => prev.map(sub => {
+    
+    submissions.forEach(sub => {
       if (sub.academicYear === selectedYear && sub.status !== 'emitido') {
-        count++;
         const csvCode = `CSV-UMH-${selectedYear.slice(0, 4)}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-        return {
-          ...sub,
+        batch.update(doc(db, 'submissions', sub.id), {
           status: 'emitido',
           certificate: {
             csvCode,
@@ -319,37 +363,35 @@ export function VolunteerProvider({ children }: { children: React.ReactNode }) {
             sentByEmail: true,
             emailSentDate: now.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })
           }
-        };
+        });
+        count++;
       }
-      return sub;
-    }));
+    });
 
-    try {
-      confetti({ particleCount: 120, spread: 90, origin: { y: 0.5 } });
-    } catch {
-      // safe fallback
+    if (count > 0) {
+      try {
+        await batch.commit();
+        confetti({ particleCount: 120, spread: 90, origin: { y: 0.5 } });
+        showToast(`Generados ${count} certificados oficiales con código seguro CSV.`, 'success');
+      } catch (e) {
+        handleFirestoreError(e, OperationType.UPDATE, 'submissions');
+      }
     }
-
-    showToast(`Generados ${count} certificados oficiales con código seguro CSV.`, 'success');
   };
 
-  // Import Google Forms CSV
-  const importGoogleFormsCsv = (csvText: string): number => {
+  const importGoogleFormsCsv = async (csvText: string) => {
     const lines = csvText.trim().split('\n');
     if (lines.length < 2) {
       showToast('El archivo CSV está vacío o no tiene registros.', 'warning');
       return 0;
     }
 
+    const batch = writeBatch(db);
     let addedCount = 0;
-    const newItems: VolunteerSubmission[] = [];
 
-    // Parse simple CSV (ignoring header)
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
-      
-      // Simple parser handling quoted commas or standard comma separation
       const cols = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
       if (cols.length < 4) continue;
 
@@ -368,8 +410,9 @@ export function VolunteerProvider({ children }: { children: React.ReactNode }) {
       const id = 'import-' + Date.now().toString() + '-' + i;
       const ects = colectivo === 'estudiante' ? Number((hours / config.hoursPerEcts).toFixed(2)) : 0;
 
-      newItems.push({
+      const newSub: VolunteerSubmission = {
         id,
+        userId: 'imported', // For imported users without auth accounts
         academicYear: selectedYear,
         name,
         nif,
@@ -378,182 +421,159 @@ export function VolunteerProvider({ children }: { children: React.ReactNode }) {
         colectivo,
         departmentOrDegree: deptOrDegree,
         submissionDate: timestamp,
-        hoursRequested: hours,
         hoursApproved: hours,
         ectsCredits: ects,
         activitiesCount: 1,
         status: 'cotejado',
         eventsDeclared: [
           {
-            eventId: 'ev-1',
+            eventId: 'ev-import',
             eventName,
             shiftName,
             hoursDeclared: hours,
             hoursApproved: hours,
             attended: true,
-            actaNumber: 'Google Forms',
             validatedForCertificate: true
           }
         ]
-      });
+      };
+      
+      batch.set(doc(db, 'submissions', id), newSub);
       addedCount++;
     }
 
     if (addedCount > 0) {
-      setSubmissions(prev => [...newItems, ...prev]);
-      showToast(`¡Se han importado con éxito ${addedCount} registros de Google Forms para el curso ${selectedYear}!`, 'success');
+      try {
+        await batch.commit();
+        showToast(`Importados ${addedCount} voluntarios desde Google Forms.`, 'success');
+      } catch (e) {
+        handleFirestoreError(e, OperationType.CREATE, 'submissions');
+      }
     }
-
     return addedCount;
   };
 
-  // Export to CSV/Excel
   const exportDataToCsv = (type: 'asistencia' | 'certificados') => {
-    const currentSubs = submissions.filter(s => s.academicYear === selectedYear);
+    let headers: string[];
+    let rows: string[];
     
     if (type === 'asistencia') {
-      const headers = ['Curso', 'Nombre', 'NIF', 'Email', 'Teléfono', 'Colectivo', 'Titulación/Dpto', 'Evento', 'Turno', 'Horas Asistidas', 'Asistió', 'Fecha Solicitud'];
-      const rows: any[] = [];
-      currentSubs.forEach(s => {
-        s.eventsDeclared.forEach(e => {
-          rows.push([
-            s.academicYear,
-            s.name,
-            s.nif,
-            s.email,
-            s.phone,
-            s.colectivo.toUpperCase(),
-            s.departmentOrDegree,
-            e.eventName,
-            e.shiftName,
-            e.hoursApproved,
-            e.attended ? 'SÍ' : 'NO',
-            s.submissionDate
-          ]);
-        });
-      });
-
-      const csv = [headers.join(','), ...rows.map(r => r.map((v: any) => `"${v}"`).join(','))].join('\n');
-      downloadFile(csv, `Listado_Asistencia_${selectedYear}.csv`);
-      showToast(`Listado de asistencia de ${selectedYear} exportado a Excel.`, 'info');
+      headers = ['Nombre', 'NIF', 'Email', 'Colectivo', 'Horas Acumuladas', 'Estado'];
+      rows = yearSubmissions.map(s => 
+        `"${s.name}","${s.nif}","${s.email}","${s.colectivo}","${s.hoursApproved}","${s.status}"`
+      );
     } else {
-      const headers = ['Curso', 'Nombre', 'NIF', 'Colectivo', 'Horas Totales', 'Créditos ECTS', 'Actividades Desempeño', 'Código Seguro CSV', 'Fecha Solicitud', 'Fecha Resolución', 'Firmado Por'];
-      const rows = currentSubs.map(s => [
-        s.academicYear,
-        s.name,
-        s.nif,
-        s.colectivo.toUpperCase(),
-        s.hoursApproved,
-        s.ectsCredits,
-        s.activitiesCount,
-        s.certificate?.csvCode || 'Pendiente',
-        s.submissionDate,
-        s.certificate?.issueDate || 'No resuelto',
-        s.certificate?.signedBy || config.signerName
-      ]);
-
-      const csv = [headers.join(','), ...rows.map(r => r.map((v: any) => `"${v}"`).join(','))].join('\n');
-      downloadFile(csv, `Certificados_Emitidos_${selectedYear}.csv`);
-      showToast(`Informes y certificados de ${selectedYear} exportados a Excel.`, 'info');
+      headers = ['Nombre', 'NIF', 'Email', 'CSV Certificado', 'Fecha Emision', 'Enviado'];
+      rows = yearSubmissions.map(s => 
+        `"${s.name}","${s.nif}","${s.email}","${s.certificate?.csvCode || 'No emitido'}","${s.certificate?.issueDate || ''}","${s.certificate?.sentByEmail ? 'SI' : 'NO'}"`
+      );
     }
-  };
-
-  const downloadFile = (content: string, filename: string) => {
-    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', filename);
+    
+    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(','), ...rows].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `umh_${type}_${selectedYear}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    
+    showToast(`Exportación de ${type} iniciada.`, 'info');
   };
 
-  const updateConfig = (newCfg: Partial<SystemConfig>) => {
-    setConfig(prev => ({ ...prev, ...newCfg }));
-    showToast('Ajustes guardados correctamente.', 'info');
+  const updateConfig = async (newCfg: Partial<SystemConfig>) => {
+    try {
+      await updateDoc(doc(db, 'config', 'main'), newCfg);
+      showToast('Configuración actualizada correctamente.', 'success');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, 'config/main');
+    }
   };
 
-  const updateEvent = (eventId: string, updatedEvent: Partial<EventItem>) => {
-    setEvents(prev => prev.map(ev => {
-      if (ev.id === eventId) {
-        return { ...ev, ...updatedEvent };
-      }
-      return ev;
-    }));
-    showToast('Evento actualizado correctamente.', 'success');
-  };
-
-  const deleteEvent = (eventId: string) => {
-    setEvents(prev => prev.filter(ev => ev.id !== eventId));
-    showToast('Evento eliminado.', 'success');
-  };
-
-  const addEvent = (newEvent: Omit<EventItem, 'id' | 'academicYear'>) => {
+  const addEvent = async (newEvent: Omit<EventItem, 'id' | 'academicYear'>) => {
     const id = 'ev-' + Date.now().toString();
-    setEvents(prev => [{ ...newEvent, id, academicYear: selectedYear }, ...prev]);
-    showToast(`Evento "${newEvent.name}" creado para el curso ${selectedYear}.`, 'success');
+    try {
+      await setDoc(doc(db, 'events', id), {
+        ...newEvent,
+        academicYear: selectedYear
+      });
+      showToast('Evento creado.', 'success');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.CREATE, 'events');
+    }
   };
 
-  // Filtered by selected year
+  const updateEvent = async (eventId: string, updatedEvent: Partial<EventItem>) => {
+    try {
+      await updateDoc(doc(db, 'events', eventId), updatedEvent);
+      showToast('Evento actualizado.', 'success');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `events/${eventId}`);
+    }
+  };
+
+  const deleteEvent = async (eventId: string) => {
+    try {
+      await deleteDoc(doc(db, 'events', eventId));
+      showToast('Evento eliminado.', 'success');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, `events/${eventId}`);
+    }
+  };
+
   const yearSubmissions = submissions.filter(s => s.academicYear === selectedYear);
   const yearEvents = events.filter(e => e.academicYear === selectedYear);
+  const activeSubmission = submissions.find(s => s.id === selectedSubmissionId);
 
-  const activeSubmission = submissions.find(s => s.id === selectedSubmissionId) || yearSubmissions[0] || submissions[0];
-
-  const totalVolunteers = yearSubmissions.length;
   const pendingCount = yearSubmissions.filter(s => s.status === 'pendiente').length;
   const validatedCount = yearSubmissions.filter(s => s.status === 'validado' || s.status === 'cotejado').length;
   const issuedCount = yearSubmissions.filter(s => s.status === 'emitido').length;
-  const totalEctsHours = yearSubmissions
-    .filter(s => s.colectivo === 'estudiante')
-    .reduce((acc, s) => acc + s.hoursApproved, 0);
-  const studentsCount = yearSubmissions.filter(s => s.colectivo === 'estudiante').length;
-  const workersCount = yearSubmissions.filter(s => s.colectivo === 'ptgas' || s.colectivo === 'pdi').length;
+  const totalEctsHours = yearSubmissions.filter(s => s.colectivo === 'estudiante').reduce((acc, sub) => acc + sub.hoursApproved, 0);
+  
+  const stats = {
+    totalVolunteers: yearSubmissions.length,
+    pendingCount,
+    validatedCount,
+    issuedCount,
+    totalEctsHours,
+    studentsCount: yearSubmissions.filter(s => s.colectivo === 'estudiante').length,
+    workersCount: yearSubmissions.filter(s => s.colectivo !== 'estudiante').length
+  };
+
+  const ctx: VolunteerContextType = {
+    submissions,
+    events,
+    config,
+    selectedYear,
+    setSelectedYear,
+    availableYears: config.availableYears,
+    addAcademicYear,
+    selectedSubmissionId,
+    setSelectedSubmissionId,
+    activeSubmission,
+    addSubmission,
+    toggleAttendance,
+    markAllAttendedForEvent,
+    acceptAndGenerateReportForEvent,
+    issueCertificate,
+    issueAllPendingCertificates,
+    markCertificateAsSent,
+    importGoogleFormsCsv,
+    exportDataToCsv,
+    updateConfig,
+    addEvent,
+    updateEvent,
+    deleteEvent,
+    toasts,
+    showToast,
+    dismissToast,
+    yearSubmissions,
+    yearEvents,
+    stats
+  };
 
   return (
-    <VolunteerContext.Provider
-      value={{
-        submissions,
-        events,
-        config,
-        selectedYear,
-        setSelectedYear,
-        availableYears: config.availableYears,
-        addAcademicYear,
-        selectedSubmissionId,
-        setSelectedSubmissionId,
-        activeSubmission,
-        addSubmission,
-        toggleAttendance,
-        markAllAttendedForEvent,
-        acceptAndGenerateReportForEvent,
-        issueCertificate,
-        issueAllPendingCertificates,
-        markCertificateAsSent,
-        importGoogleFormsCsv,
-        exportDataToCsv,
-        updateConfig,
-        addEvent,
-        updateEvent,
-        deleteEvent,
-        toasts,
-        showToast,
-        dismissToast,
-        yearSubmissions,
-        yearEvents,
-        stats: {
-          totalVolunteers,
-          pendingCount,
-          validatedCount,
-          issuedCount,
-          totalEctsHours,
-          studentsCount,
-          workersCount
-        }
-      }}
-    >
+    <VolunteerContext.Provider value={ctx}>
       {children}
     </VolunteerContext.Provider>
   );
@@ -561,7 +581,7 @@ export function VolunteerProvider({ children }: { children: React.ReactNode }) {
 
 export function useVolunteer() {
   const context = useContext(VolunteerContext);
-  if (!context) {
+  if (context === undefined) {
     throw new Error('useVolunteer must be used within a VolunteerProvider');
   }
   return context;
